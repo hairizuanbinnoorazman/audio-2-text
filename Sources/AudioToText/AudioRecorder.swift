@@ -1,13 +1,17 @@
 import AVFoundation
+import CoreMedia
 import Foundation
 
 enum RecorderError: Error, CustomStringConvertible {
-    case invalidFormat
+    case noMicrophoneFound
+    case sessionConfigurationFailed
 
     var description: String {
         switch self {
-        case .invalidFormat:
-            return "Failed to create audio format"
+        case .noMicrophoneFound:
+            return "No microphone device found"
+        case .sessionConfigurationFailed:
+            return "Failed to configure capture session"
         }
     }
 }
@@ -38,63 +42,108 @@ private final class LockedData: @unchecked Sendable {
     }
 }
 
-final class AudioRecorder {
-    private var engine: AVAudioEngine?
+final class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
+    private var captureSession: AVCaptureSession?
     private let pcmBuffer = LockedData()
-    private(set) var sampleRate: Int = 0
+    private let captureQueue = DispatchQueue(label: "audio.capture.queue")
+    private(set) var sampleRate: Int = 48000
+    private var channelCount: Int = 1
+    private var formatDetected = false
 
     func start() throws {
-        let engine = AVAudioEngine()
-        let inputNode = engine.inputNode
-        let hwFormat = inputNode.outputFormat(forBus: 0)
+        let session = AVCaptureSession()
 
-        sampleRate = Int(hwFormat.sampleRate)
-        if sampleRate == 0 {
-            print("Hardware sample rate is 0, falling back to 48000")
-            sampleRate = 48000
+        guard let mic = AVCaptureDevice.default(for: .audio) else {
+            throw RecorderError.noMicrophoneFound
         }
 
-        print("Recording at native sample rate \(sampleRate) Hz")
-
-        guard let tapFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: Double(sampleRate),
-            channels: 1,
-            interleaved: false
-        ) else {
-            throw RecorderError.invalidFormat
+        let input = try AVCaptureDeviceInput(device: mic)
+        guard session.canAddInput(input) else {
+            throw RecorderError.sessionConfigurationFailed
         }
+        session.addInput(input)
+
+        let output = AVCaptureAudioDataOutput()
+        output.setSampleBufferDelegate(self, queue: captureQueue)
+        guard session.canAddOutput(output) else {
+            throw RecorderError.sessionConfigurationFailed
+        }
+        session.addOutput(output)
 
         pcmBuffer.reset()
+        formatDetected = false
+        sampleRate = 48000
+        channelCount = 1
 
-        let buffer = pcmBuffer
-        inputNode.installTap(onBus: 0, bufferSize: 4096, format: tapFormat) { pcmBuf, _ in
-            guard let floatData = pcmBuf.floatChannelData?[0] else { return }
-            let frameCount = Int(pcmBuf.frameLength)
-
-            // Convert Float32 samples to Int16 PCM
-            var int16Data = Data(count: frameCount * MemoryLayout<Int16>.size)
-            int16Data.withUnsafeMutableBytes { rawPtr in
-                let int16Ptr = rawPtr.bindMemory(to: Int16.self)
-                for i in 0..<frameCount {
-                    var sample = floatData[i]
-                    sample = max(-1.0, min(1.0, sample))
-                    int16Ptr[i] = Int16(sample * 32767.0)
-                }
-            }
-            buffer.append(int16Data)
-        }
-
-        try engine.start()
-        self.engine = engine
+        session.startRunning()
+        self.captureSession = session
     }
 
     func stop() -> Data {
-        if let engine = engine {
-            engine.inputNode.removeTap(onBus: 0)
-            engine.stop()
-        }
-        engine = nil
+        captureSession?.stopRunning()
+        captureSession = nil
         return pcmBuffer.takeData()
+    }
+
+    // MARK: - AVCaptureAudioDataOutputSampleBufferDelegate
+
+    func captureOutput(
+        _ output: AVCaptureOutput,
+        didOutput sampleBuffer: CMSampleBuffer,
+        from connection: AVCaptureConnection
+    ) {
+        if !formatDetected, let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) {
+            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
+            if let asbd = asbd {
+                sampleRate = Int(asbd.mSampleRate)
+                channelCount = max(1, Int(asbd.mChannelsPerFrame))
+            }
+            formatDetected = true
+        }
+
+        var audioBufferList = AudioBufferList()
+        var blockBuffer: CMBlockBuffer?
+
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: nil,
+            bufferListOut: &audioBufferList,
+            bufferListSize: MemoryLayout<AudioBufferList>.size,
+            blockBufferAllocator: nil,
+            blockBufferMemoryAllocator: nil,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+            blockBufferOut: &blockBuffer
+        )
+
+        guard status == noErr else { return }
+
+        let bufferCount = Int(audioBufferList.mNumberBuffers)
+        guard bufferCount > 0 else { return }
+
+        let buf = audioBufferList.mBuffers
+        guard let rawPtr = buf.mData else { return }
+        let floatPtr = rawPtr.assumingMemoryBound(to: Float32.self)
+        let totalFloats = Int(buf.mDataByteSize) / MemoryLayout<Float32>.size
+        let frameCount = totalFloats / channelCount
+
+        var int16Data = Data(count: frameCount * MemoryLayout<Int16>.size)
+        int16Data.withUnsafeMutableBytes { rawBuf in
+            let int16Ptr = rawBuf.bindMemory(to: Int16.self)
+            for i in 0..<frameCount {
+                var sample: Float
+                if channelCount > 1 {
+                    var sum: Float = 0
+                    for ch in 0..<channelCount {
+                        sum += floatPtr[i * channelCount + ch]
+                    }
+                    sample = sum / Float(channelCount)
+                } else {
+                    sample = floatPtr[i]
+                }
+                sample = max(-1.0, min(1.0, sample))
+                int16Ptr[i] = Int16(sample * 32767.0)
+            }
+        }
+        pcmBuffer.append(int16Data)
     }
 }
