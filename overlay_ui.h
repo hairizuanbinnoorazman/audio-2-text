@@ -9,5 +9,6 @@ int isOverlayVisible(void);
 char *getTranscriptionText(void);
 void updateTranscriptionText(const char *text);
 void updateStatusLabel(const char *text);
+void stopWaveform(void);
 
 #endif

@@ -204,3 +204,9 @@ void updateStatusLabel(const char *text) {
         [_statusField setStringValue:str];
     });
 }
+
+void stopWaveform(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [_waveformView stopAnimating];
+    });
+}
