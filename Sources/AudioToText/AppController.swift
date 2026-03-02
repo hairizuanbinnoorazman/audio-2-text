@@ -2,6 +2,7 @@ import AppKit
 
 enum AppState {
     case idle
+    case starting
     case recording
     case transcribing
 }
@@ -13,6 +14,7 @@ final class AppController {
     private var state: AppState = .idle
     private var transcriptionTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
+    private var lastHotkeyTime = DispatchTime(uptimeNanoseconds: 0)
 
     init(overlay: OverlayPanel, recorder: AudioRecorder, transcriber: Transcriber) {
         self.overlay = overlay
@@ -21,33 +23,49 @@ final class AppController {
     }
 
     func hotkeyPressed() {
+        let now = DispatchTime.now()
+        let delta = now.uptimeNanoseconds - lastHotkeyTime.uptimeNanoseconds
+        print("[\(logTS())] [AppController] hotkeyPressed() called, state=\(state), delta=\(delta)ns")
+        guard delta > 300_000_000 else {
+            print("[\(logTS())] [AppController] DEBOUNCED — skipping (delta \(delta)ns < 300ms)")
+            return
+        }
+        lastHotkeyTime = now
+
         switch state {
         case .idle:
             startRecording()
+        case .starting:
+            print("[\(logTS())] [AppController] Session still starting, please wait...")
         case .recording:
             stopRecordingAndTranscribe()
         case .transcribing:
-            print("Transcription in progress, please wait...")
+            print("[\(logTS())] [AppController] Transcription in progress, please wait...")
         }
     }
 
     private func startRecording() {
-        print("Hotkey pressed, starting dictation...")
+        print("[\(logTS())] [AppController] State: \(state) → starting")
+        state = .starting
         overlay.show()
 
         do {
-            try recorder.start()
+            try recorder.start { [weak self] in
+                guard let self = self, self.state == .starting else { return }
+                print("[\(logTS())] [AppController] Session ready — State: starting → recording")
+                self.state = .recording
+            }
+            print("[\(logTS())] [AppController] recorder.start() returned (session starting in background)")
         } catch {
-            print("Recording error:", error)
+            print("[\(logTS())] [AppController] Recording error:", error)
+            state = .idle
             handleError("Mic error: \(error)")
             return
         }
-
-        state = .recording
     }
 
     private func stopRecordingAndTranscribe() {
-        print("Hotkey pressed, stopping recording...")
+        print("[\(logTS())] [AppController] State: \(state) → transcribing")
         state = .transcribing
 
         overlay.updateTranscription("Transcribing...")
@@ -55,13 +73,16 @@ final class AppController {
         overlay.stopWaveform()
 
         let audioData = recorder.stop()
+        print("[\(logTS())] [AppController] Audio data from recorder: \(audioData.count) bytes")
 
         guard !audioData.isEmpty else {
+            print("[\(logTS())] [AppController] ERROR: No audio captured — aborting transcription")
             handleError("No audio captured")
             return
         }
 
         let sampleRate = recorder.sampleRate
+        print("[\(logTS())] [AppController] Using sample rate: \(sampleRate) Hz")
         let overlay = self.overlay
         let transcriber = self.transcriber
 

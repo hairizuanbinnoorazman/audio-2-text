@@ -13,14 +13,15 @@ let package = Package(
             dependencies: [
                 .product(name: "AWSTranscribeStreaming", package: "aws-sdk-swift"),
             ],
+            exclude: ["Info.plist"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
             ],
             linkerSettings: [
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("AppKit"),
-                .linkedFramework("AVFoundation"),
                 .linkedFramework("CoreFoundation"),
+                .linkedFramework("AVFoundation"),
             ]
         ),
     ]

@@ -1,5 +1,7 @@
 import AppKit
 
+MicPermission.ensureAccess()
+
 print("Initializing AWS Transcribe client...")
 let transcriber: Transcriber
 do {
@@ -12,8 +14,6 @@ print("AWS Transcribe client ready.")
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
-
-MicPermission.ensureAccess()
 
 let overlay = OverlayPanel()
 let recorder = AudioRecorder()

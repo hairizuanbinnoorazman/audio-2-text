@@ -1,22 +1,20 @@
 import AVFoundation
-import CoreMedia
-import Foundation
 
 enum RecorderError: Error, CustomStringConvertible {
-    case noMicrophoneFound
-    case sessionConfigurationFailed
+    case noInputAvailable
+    case engineStartFailed(Error)
 
     var description: String {
         switch self {
-        case .noMicrophoneFound:
-            return "No microphone device found"
-        case .sessionConfigurationFailed:
-            return "Failed to configure capture session"
+        case .noInputAvailable:
+            return "No audio input device available"
+        case .engineStartFailed(let error):
+            return "Failed to start audio engine: \(error.localizedDescription)"
         }
     }
 }
 
-/// Thread-safe buffer for accumulating PCM data from the CoreAudio callback thread.
+/// Thread-safe buffer for accumulating PCM data from the audio tap.
 private final class LockedData: @unchecked Sendable {
     private var data = Data()
     private let lock = NSLock()
@@ -42,108 +40,91 @@ private final class LockedData: @unchecked Sendable {
     }
 }
 
-final class AudioRecorder: NSObject, AVCaptureAudioDataOutputSampleBufferDelegate {
-    private var captureSession: AVCaptureSession?
+final class AudioRecorder {
+    private let engine = AVAudioEngine()
     private let pcmBuffer = LockedData()
-    private let captureQueue = DispatchQueue(label: "audio.capture.queue")
+    private var isRunning = false
     private(set) var sampleRate: Int = 48000
-    private var channelCount: Int = 1
-    private var formatDetected = false
+    private var firstBufferLogged = false
 
-    func start() throws {
-        let session = AVCaptureSession()
-
-        guard let mic = AVCaptureDevice.default(for: .audio) else {
-            throw RecorderError.noMicrophoneFound
+    func start(onReady: @escaping () -> Void) throws {
+        print("[\(logTS())] [AudioRecorder] Starting AVAudioEngine capture...")
+        guard !isRunning else {
+            print("[\(logTS())] [AudioRecorder] WARNING: start() called while already running")
+            return
         }
-
-        let input = try AVCaptureDeviceInput(device: mic)
-        guard session.canAddInput(input) else {
-            throw RecorderError.sessionConfigurationFailed
-        }
-        session.addInput(input)
-
-        let output = AVCaptureAudioDataOutput()
-        output.setSampleBufferDelegate(self, queue: captureQueue)
-        guard session.canAddOutput(output) else {
-            throw RecorderError.sessionConfigurationFailed
-        }
-        session.addOutput(output)
 
         pcmBuffer.reset()
-        formatDetected = false
-        sampleRate = 48000
-        channelCount = 1
+        firstBufferLogged = false
 
-        session.startRunning()
-        self.captureSession = session
+        let inputNode = engine.inputNode
+        let hwFormat = inputNode.inputFormat(forBus: 0)
+        guard hwFormat.sampleRate > 0 else {
+            throw RecorderError.noInputAvailable
+        }
+
+        sampleRate = Int(hwFormat.sampleRate)
+        print("[\(logTS())] [AudioRecorder] Input format: \(hwFormat.sampleRate) Hz, \(hwFormat.channelCount) ch")
+
+        inputNode.installTap(onBus: 0, bufferSize: 4096, format: hwFormat) { [weak self] buffer, _ in
+            guard let self = self else { return }
+            let pcmData = self.convertToInt16Mono(buffer: buffer)
+            if !self.firstBufferLogged {
+                self.firstBufferLogged = true
+                print("[\(logTS())] [AudioRecorder] First audio buffer received (\(pcmData.count) bytes)")
+            }
+            self.pcmBuffer.append(pcmData)
+        }
+
+        engine.prepare()
+
+        do {
+            try engine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            throw RecorderError.engineStartFailed(error)
+        }
+
+        isRunning = true
+        print("[\(logTS())] [AudioRecorder] AVAudioEngine started successfully")
+
+        DispatchQueue.main.async {
+            onReady()
+        }
     }
 
     func stop() -> Data {
-        captureSession?.stopRunning()
-        captureSession = nil
-        return pcmBuffer.takeData()
+        print("[\(logTS())] [AudioRecorder] Stopping AVAudioEngine...")
+        guard isRunning else {
+            print("[\(logTS())] [AudioRecorder] WARNING: stop() called while not running")
+            return Data()
+        }
+        isRunning = false
+
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+
+        let data = pcmBuffer.takeData()
+        print("[\(logTS())] [AudioRecorder] Total PCM data accumulated: \(data.count) bytes")
+        if data.isEmpty {
+            print("[\(logTS())] [AudioRecorder] WARNING: No audio data captured")
+        }
+        return data
     }
 
-    // MARK: - AVCaptureAudioDataOutputSampleBufferDelegate
-
-    func captureOutput(
-        _ output: AVCaptureOutput,
-        didOutput sampleBuffer: CMSampleBuffer,
-        from connection: AVCaptureConnection
-    ) {
-        if !formatDetected, let formatDesc = CMSampleBufferGetFormatDescription(sampleBuffer) {
-            let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(formatDesc)?.pointee
-            if let asbd = asbd {
-                sampleRate = Int(asbd.mSampleRate)
-                channelCount = max(1, Int(asbd.mChannelsPerFrame))
-            }
-            formatDetected = true
-        }
-
-        var audioBufferList = AudioBufferList()
-        var blockBuffer: CMBlockBuffer?
-
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: nil,
-            bufferListOut: &audioBufferList,
-            bufferListSize: MemoryLayout<AudioBufferList>.size,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
-            blockBufferOut: &blockBuffer
-        )
-
-        guard status == noErr else { return }
-
-        let bufferCount = Int(audioBufferList.mNumberBuffers)
-        guard bufferCount > 0 else { return }
-
-        let buf = audioBufferList.mBuffers
-        guard let rawPtr = buf.mData else { return }
-        let floatPtr = rawPtr.assumingMemoryBound(to: Float32.self)
-        let totalFloats = Int(buf.mDataByteSize) / MemoryLayout<Float32>.size
-        let frameCount = totalFloats / channelCount
-
-        var int16Data = Data(count: frameCount * MemoryLayout<Int16>.size)
-        int16Data.withUnsafeMutableBytes { rawBuf in
-            let int16Ptr = rawBuf.bindMemory(to: Int16.self)
+    /// Convert non-interleaved Float32 from AVAudioEngine tap to Int16 mono PCM.
+    private func convertToInt16Mono(buffer: AVAudioPCMBuffer) -> Data {
+        guard let floatData = buffer.floatChannelData else { return Data() }
+        let frameCount = Int(buffer.frameLength)
+        var data = Data(count: frameCount * 2)
+        data.withUnsafeMutableBytes { rawBuffer in
+            let int16Ptr = rawBuffer.bindMemory(to: Int16.self)
+            let channel0 = floatData[0]
             for i in 0..<frameCount {
-                var sample: Float
-                if channelCount > 1 {
-                    var sum: Float = 0
-                    for ch in 0..<channelCount {
-                        sum += floatPtr[i * channelCount + ch]
-                    }
-                    sample = sum / Float(channelCount)
-                } else {
-                    sample = floatPtr[i]
-                }
-                sample = max(-1.0, min(1.0, sample))
-                int16Ptr[i] = Int16(sample * 32767.0)
+                let sample = max(-1.0, min(1.0, channel0[i]))
+                int16Ptr[i] = Int16(sample * Float(Int16.max))
             }
         }
-        pcmBuffer.append(int16Data)
+        return data
     }
 }

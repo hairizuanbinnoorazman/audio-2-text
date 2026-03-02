@@ -1,9 +1,17 @@
 import CoreGraphics
 import Foundation
 
+func logTS() -> String {
+    let t = ProcessInfo.processInfo.systemUptime
+    let secs = Int(t)
+    let ms = Int((t - Double(secs)) * 1000)
+    return String(format: "%d.%03d", secs, ms)
+}
+
 final class HotkeyManager {
     let callback: () -> Void
     var tapPort: CFMachPort?
+    var lastHotkeyTimestamp: UInt64 = 0
 
     init(callback: @escaping () -> Void) {
         self.callback = callback
@@ -56,6 +64,11 @@ private func hotkeyEventCallback(
 
     let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
     let flags = event.flags
+    let isAutoRepeat = event.getIntegerValueField(.keyboardEventAutorepeat) != 0
+
+    guard !isAutoRepeat else {
+        return Unmanaged.passUnretained(event)
+    }
 
     let hasCtrl = flags.contains(.maskControl)
     let hasOption = flags.contains(.maskAlternate)
@@ -64,7 +77,18 @@ private func hotkeyEventCallback(
 
     // Ctrl+Option+K: keycode 40
     if keyCode == 40 && hasCtrl && hasOption && noCmd && noShift {
+        let now = event.timestamp
+        let delta = now - manager.lastHotkeyTimestamp
+        print("[\(logTS())] [HotkeyManager] CGEvent hotkey detected, event.timestamp=\(now), last=\(manager.lastHotkeyTimestamp), delta=\(delta)ns")
+        guard now > manager.lastHotkeyTimestamp + 300_000_000 else {
+            print("[\(logTS())] [HotkeyManager] DEBOUNCED — skipping duplicate (delta \(delta)ns < 300ms)")
+            return nil  // swallow duplicate
+        }
+        manager.lastHotkeyTimestamp = now
+
+        print("[\(logTS())] [HotkeyManager] ACCEPTED — dispatching callback to main queue")
         DispatchQueue.main.async {
+            print("[\(logTS())] [HotkeyManager] callback executing on main queue")
             manager.callback()
         }
         return nil // swallow the event
