@@ -2,3 +2,4 @@
 audio-2-text
 .build/
 .swiftpm/
+.DS_Store
