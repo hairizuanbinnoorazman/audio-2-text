@@ -49,7 +49,7 @@ final class TextCleaner: @unchecked Sendable {
         let input = InvokeModelInput(
             body: jsonData,
             contentType: "application/json",
-            modelId: "anthropic.claude-3-haiku-20240307"
+            modelId: "global.anthropic.claude-haiku-4-5-20251001-v1:0"
         )
 
         let response = try await client.invokeModel(input: input)
