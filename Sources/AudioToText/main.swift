@@ -12,6 +12,16 @@ do {
 }
 print("AWS Transcribe client ready.")
 
+print("Initializing Bedrock text cleaner...")
+let textCleaner: TextCleaner
+do {
+    textCleaner = try TextCleaner()
+} catch {
+    fputs("Failed to initialize text cleaner: \(error)\n", stderr)
+    exit(1)
+}
+print("Bedrock text cleaner ready.")
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 
@@ -20,7 +30,8 @@ let recorder = AudioRecorder()
 let controller = AppController(
     overlay: overlay,
     recorder: recorder,
-    transcriber: transcriber
+    transcriber: transcriber,
+    textCleaner: textCleaner
 )
 
 let hotkeyManager = HotkeyManager {

@@ -11,15 +11,17 @@ final class AppController {
     private let overlay: OverlayPanel
     private let recorder: AudioRecorder
     private let transcriber: Transcriber
+    private let textCleaner: TextCleaner
     private var state: AppState = .idle
     private var transcriptionTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var lastHotkeyTime = DispatchTime(uptimeNanoseconds: 0)
 
-    init(overlay: OverlayPanel, recorder: AudioRecorder, transcriber: Transcriber) {
+    init(overlay: OverlayPanel, recorder: AudioRecorder, transcriber: Transcriber, textCleaner: TextCleaner) {
         self.overlay = overlay
         self.recorder = recorder
         self.transcriber = transcriber
+        self.textCleaner = textCleaner
     }
 
     func hotkeyPressed() {
@@ -85,26 +87,39 @@ final class AppController {
         print("[\(logTS())] [AppController] Using sample rate: \(sampleRate) Hz")
         let overlay = self.overlay
         let transcriber = self.transcriber
+        let textCleaner = self.textCleaner
 
         transcriptionTask = Task { @MainActor [weak self] in
             defer { self?.timeoutTask?.cancel() }
             do {
-                let text = try await transcriber.transcribe(
+                let rawText = try await transcriber.transcribe(
                     audioData: audioData,
                     sampleRateHz: sampleRate
                 )
 
                 guard !Task.isCancelled else { return }
 
-                print("Transcription result:", text)
-                overlay.updateTranscription(text)
+                print("Transcription result:", rawText)
+                overlay.updateStatus("Cleaning up...")
+
+                var finalText = rawText
+                do {
+                    finalText = try await textCleaner.clean(rawText: rawText)
+                    print("Cleaned text:", finalText)
+                } catch {
+                    print("Text cleanup failed (using raw text):", error)
+                }
+
+                guard !Task.isCancelled else { return }
+
+                overlay.updateTranscription(finalText)
                 overlay.updateStatus("Done!")
 
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled else { return }
 
                 overlay.hide()
-                TextInjector.inject(text: text)
+                TextInjector.inject(text: finalText)
                 self?.state = .idle
             } catch {
                 guard !Task.isCancelled else { return }
