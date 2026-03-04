@@ -12,6 +12,7 @@ let package = Package(
             name: "AudioToText",
             dependencies: [
                 .product(name: "AWSTranscribeStreaming", package: "aws-sdk-swift"),
+                .product(name: "AWSBedrockRuntime", package: "aws-sdk-swift"),
             ],
             exclude: ["Info.plist"],
             swiftSettings: [
