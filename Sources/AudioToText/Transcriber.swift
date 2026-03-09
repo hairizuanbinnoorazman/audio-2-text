@@ -107,8 +107,12 @@ final class Transcriber: @unchecked Sendable {
         try await withThrowingTaskGroup(of: (Int, String).self) { group in
             for chunk in chunks {
                 group.addTask {
-                    let text = try await self.transcribe(audioData: chunk.data, sampleRateHz: sampleRateHz)
-                    return (chunk.index, text)
+                    do {
+                        let text = try await self.transcribe(audioData: chunk.data, sampleRateHz: sampleRateHz)
+                        return (chunk.index, text)
+                    } catch TranscriberError.noSpeechDetected {
+                        return (chunk.index, "")
+                    }
                 }
             }
             for try await result in group {
