@@ -85,6 +85,11 @@ final class AppController {
 
         let sampleRate = recorder.sampleRate
         print("[\(logTS())] [AppController] Using sample rate: \(sampleRate) Hz")
+        let audioDurationSeconds = Double(audioData.count) / Double(sampleRate * 2)
+        if audioDurationSeconds > 30 {
+            let chunkCount = Int(ceil(audioDurationSeconds / 30))
+            overlay.updateStatus("Large audio (~\(Int(audioDurationSeconds))s), splitting into \(chunkCount) chunks...")
+        }
         let overlay = self.overlay
         let transcriber = self.transcriber
         let textCleaner = self.textCleaner
@@ -92,7 +97,7 @@ final class AppController {
         transcriptionTask = Task { @MainActor [weak self] in
             defer { self?.timeoutTask?.cancel() }
             do {
-                let rawText = try await transcriber.transcribe(
+                let rawText = try await transcriber.transcribeChunked(
                     audioData: audioData,
                     sampleRateHz: sampleRate
                 )
@@ -129,8 +134,9 @@ final class AppController {
         }
 
         // Safety timeout: force-hide overlay if transcription hangs
+        let timeoutNanos = UInt64(max(60, Int(audioDurationSeconds) * 3)) * 1_000_000_000
         timeoutTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 30_000_000_000)
+            try? await Task.sleep(nanoseconds: timeoutNanos)
             guard !Task.isCancelled else { return }
 
             print("Transcription timed out, force-hiding overlay")

@@ -77,4 +77,51 @@ final class Transcriber: @unchecked Sendable {
         }
         return text
     }
+
+    private let chunkDurationSeconds = 30.0
+    private let largeAudioThresholdSeconds = 30.0
+
+    func transcribeChunked(audioData: Data, sampleRateHz: Int) async throws -> String {
+        let durationSeconds = Double(audioData.count) / Double(sampleRateHz * 2)
+
+        guard durationSeconds > largeAudioThresholdSeconds else {
+            return try await transcribe(audioData: audioData, sampleRateHz: sampleRateHz)
+        }
+
+        let bytesPerSecond = sampleRateHz * 2
+        let chunkBytes = Int(chunkDurationSeconds) * bytesPerSecond
+        // Align to Int16 (2-byte) boundary
+        let alignedChunkBytes = (chunkBytes / 2) * 2
+
+        var chunks: [(index: Int, data: Data)] = []
+        var offset = 0
+        var index = 0
+        while offset < audioData.count {
+            let end = min(offset + alignedChunkBytes, audioData.count)
+            chunks.append((index: index, data: audioData.subdata(in: offset..<end)))
+            offset = end
+            index += 1
+        }
+
+        var results: [(index: Int, transcript: String)] = []
+        try await withThrowingTaskGroup(of: (Int, String).self) { group in
+            for chunk in chunks {
+                group.addTask {
+                    let text = try await self.transcribe(audioData: chunk.data, sampleRateHz: sampleRateHz)
+                    return (chunk.index, text)
+                }
+            }
+            for try await result in group {
+                results.append((index: result.0, transcript: result.1))
+            }
+        }
+
+        results.sort { $0.index < $1.index }
+        let combined = results.map { $0.transcript }.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+
+        if combined.isEmpty {
+            throw TranscriberError.noSpeechDetected
+        }
+        return combined
+    }
 }
