@@ -1,5 +1,9 @@
 import AppKit
 
+protocol TranscriptionService: Sendable {
+    func transcribe(audioData: Data, sampleRateHz: Int) async throws -> String
+}
+
 enum AppState {
     case idle
     case starting
@@ -10,17 +14,17 @@ enum AppState {
 final class AppController {
     private let overlay: OverlayPanel
     private let recorder: AudioRecorder
-    private let transcriber: Transcriber
-    private let textCleaner: TextCleaner
+    private let transcriptionService: any TranscriptionService
+    private let textCleaner: TextCleaner?
     private var state: AppState = .idle
     private var transcriptionTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var lastHotkeyTime = DispatchTime(uptimeNanoseconds: 0)
 
-    init(overlay: OverlayPanel, recorder: AudioRecorder, transcriber: Transcriber, textCleaner: TextCleaner) {
+    init(overlay: OverlayPanel, recorder: AudioRecorder, transcriptionService: any TranscriptionService, textCleaner: TextCleaner?) {
         self.overlay = overlay
         self.recorder = recorder
-        self.transcriber = transcriber
+        self.transcriptionService = transcriptionService
         self.textCleaner = textCleaner
     }
 
@@ -86,13 +90,13 @@ final class AppController {
         let sampleRate = recorder.sampleRate
         print("[\(logTS())] [AppController] Using sample rate: \(sampleRate) Hz")
         let overlay = self.overlay
-        let transcriber = self.transcriber
+        let transcriptionService = self.transcriptionService
         let textCleaner = self.textCleaner
 
         transcriptionTask = Task { @MainActor [weak self] in
             defer { self?.timeoutTask?.cancel() }
             do {
-                let rawText = try await transcriber.transcribe(
+                let rawText = try await transcriptionService.transcribe(
                     audioData: audioData,
                     sampleRateHz: sampleRate
                 )
@@ -100,14 +104,16 @@ final class AppController {
                 guard !Task.isCancelled else { return }
 
                 print("Transcription result:", rawText)
-                overlay.updateStatus("Cleaning up...")
 
                 var finalText = rawText
-                do {
-                    finalText = try await textCleaner.clean(rawText: rawText)
-                    print("Cleaned text:", finalText)
-                } catch {
-                    print("Text cleanup failed (using raw text):", error)
+                if let textCleaner = textCleaner {
+                    overlay.updateStatus("Cleaning up...")
+                    do {
+                        finalText = try await textCleaner.clean(rawText: rawText)
+                        print("Cleaned text:", finalText)
+                    } catch {
+                        print("Text cleanup failed (using raw text):", error)
+                    }
                 }
 
                 guard !Task.isCancelled else { return }

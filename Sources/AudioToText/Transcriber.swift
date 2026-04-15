@@ -15,7 +15,7 @@ enum TranscriberError: Error, CustomStringConvertible {
     }
 }
 
-final class Transcriber: @unchecked Sendable {
+final class Transcriber: @unchecked Sendable, TranscriptionService {
     private let client: TranscribeStreamingClient
 
     init() throws {
