@@ -6,7 +6,7 @@ let backend = ProcessInfo.processInfo.environment["TRANSCRIPTION_BACKEND"] ?? "t
 print("Transcription backend: \(backend)")
 
 let transcriptionService: any TranscriptionService
-let textCleaner: TextCleaner?
+let textCleaner: (any TextCleaningService)?
 
 switch backend {
 case "nova-sonic":
@@ -39,8 +39,27 @@ case "transcribe":
     }
     print("Bedrock text cleaner ready.")
 
+case "google":
+    print("Initializing Google Speech transcriber...")
+    do {
+        transcriptionService = try GoogleSpeechTranscriber()
+    } catch {
+        fputs("Failed to initialize Google Speech transcriber: \(error)\n", stderr)
+        exit(1)
+    }
+    print("Google Speech transcriber ready.")
+
+    print("Initializing Gemini text cleaner...")
+    do {
+        textCleaner = try GeminiTextCleaner()
+    } catch {
+        fputs("Failed to initialize Gemini text cleaner: \(error)\n", stderr)
+        exit(1)
+    }
+    print("Gemini text cleaner ready.")
+
 default:
-    fputs("Unknown TRANSCRIPTION_BACKEND: '\(backend)'. Use 'transcribe' or 'nova-sonic'.\n", stderr)
+    fputs("Unknown TRANSCRIPTION_BACKEND: '\(backend)'. Use 'transcribe', 'nova-sonic', or 'google'.\n", stderr)
     exit(1)
 }
 

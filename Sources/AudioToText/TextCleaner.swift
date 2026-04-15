@@ -15,7 +15,7 @@ enum TextCleanerError: Error, CustomStringConvertible {
     }
 }
 
-final class TextCleaner: @unchecked Sendable {
+final class TextCleaner: @unchecked Sendable, TextCleaningService {
     private let client: BedrockRuntimeClient
 
     init() throws {

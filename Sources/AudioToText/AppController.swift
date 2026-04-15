@@ -4,6 +4,10 @@ protocol TranscriptionService: Sendable {
     func transcribe(audioData: Data, sampleRateHz: Int) async throws -> String
 }
 
+protocol TextCleaningService: Sendable {
+    func clean(rawText: String) async throws -> String
+}
+
 enum AppState {
     case idle
     case starting
@@ -15,13 +19,13 @@ final class AppController {
     private let overlay: OverlayPanel
     private let recorder: AudioRecorder
     private let transcriptionService: any TranscriptionService
-    private let textCleaner: TextCleaner?
+    private let textCleaner: (any TextCleaningService)?
     private var state: AppState = .idle
     private var transcriptionTask: Task<Void, Never>?
     private var timeoutTask: Task<Void, Never>?
     private var lastHotkeyTime = DispatchTime(uptimeNanoseconds: 0)
 
-    init(overlay: OverlayPanel, recorder: AudioRecorder, transcriptionService: any TranscriptionService, textCleaner: TextCleaner?) {
+    init(overlay: OverlayPanel, recorder: AudioRecorder, transcriptionService: any TranscriptionService, textCleaner: (any TextCleaningService)?) {
         self.overlay = overlay
         self.recorder = recorder
         self.transcriptionService = transcriptionService
