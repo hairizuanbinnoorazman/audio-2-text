@@ -2,25 +2,47 @@ import AppKit
 
 MicPermission.ensureAccess()
 
-print("Initializing AWS Transcribe client...")
-let transcriber: Transcriber
-do {
-    transcriber = try Transcriber()
-} catch {
-    fputs("Failed to initialize transcriber: \(error)\n", stderr)
-    exit(1)
-}
-print("AWS Transcribe client ready.")
+let backend = ProcessInfo.processInfo.environment["TRANSCRIPTION_BACKEND"] ?? "transcribe"
+print("Transcription backend: \(backend)")
 
-print("Initializing Bedrock text cleaner...")
-let textCleaner: TextCleaner
-do {
-    textCleaner = try TextCleaner()
-} catch {
-    fputs("Failed to initialize text cleaner: \(error)\n", stderr)
+let transcriptionService: any TranscriptionService
+let textCleaner: TextCleaner?
+
+switch backend {
+case "nova-sonic":
+    print("Initializing Nova Sonic transcriber...")
+    do {
+        transcriptionService = try NovaSonicTranscriber()
+    } catch {
+        fputs("Failed to initialize Nova Sonic transcriber: \(error)\n", stderr)
+        exit(1)
+    }
+    print("Nova Sonic transcriber ready.")
+    textCleaner = nil
+
+case "transcribe":
+    print("Initializing AWS Transcribe client...")
+    do {
+        transcriptionService = try Transcriber()
+    } catch {
+        fputs("Failed to initialize transcriber: \(error)\n", stderr)
+        exit(1)
+    }
+    print("AWS Transcribe client ready.")
+
+    print("Initializing Bedrock text cleaner...")
+    do {
+        textCleaner = try TextCleaner()
+    } catch {
+        fputs("Failed to initialize text cleaner: \(error)\n", stderr)
+        exit(1)
+    }
+    print("Bedrock text cleaner ready.")
+
+default:
+    fputs("Unknown TRANSCRIPTION_BACKEND: '\(backend)'. Use 'transcribe' or 'nova-sonic'.\n", stderr)
     exit(1)
 }
-print("Bedrock text cleaner ready.")
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
@@ -30,7 +52,7 @@ let recorder = AudioRecorder()
 let controller = AppController(
     overlay: overlay,
     recorder: recorder,
-    transcriber: transcriber,
+    transcriptionService: transcriptionService,
     textCleaner: textCleaner
 )
 
